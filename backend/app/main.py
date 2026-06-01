@@ -9,16 +9,18 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from .models import Base, Product, Customer, Order, OrderItem
 
-# Load environment variables from .env file if present
-load_dotenv()
+# Database Configuration (Reads from Environment Variables)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("CRITICAL: DATABASE_URL environment variable is not set!")
 
-# Database Configuration (Reads from Docker Environment Variables)
-# Note: In production-ready async configurations, we use postgresql+asyncpg
-# If DATABASE_URL is not set, we default to localhost. If connection fails, we fall back to a local SQLite database dynamically.
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", 
-    "postgresql+asyncpg://postgres:safe_dev_password123@localhost:5432/inventory"
-)
+# Auto-conversion for Render PostgreSQL connection strings to use the async driver
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# Auto-conversion of sslmode query parameter to ssl parameter for asyncpg driver compatibility
+if "sslmode=" in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("sslmode=", "ssl=")
 
 # Set up the Async Engine and Async Session Maker
 engine = create_async_engine(DATABASE_URL, echo=True)
@@ -39,82 +41,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def ensure_postgres_db_exists(db_url: str):
-    import psycopg2
-    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-    from urllib.parse import unquote
-    try:
-        # Parse connection string to connect to 'postgres' administrative database first
-        # Format: Scheme://user:password@host:port/dbname
-        url_without_schema = db_url.split("://")[1]
-        credentials, host_port_db = url_without_schema.rsplit("@", 1)
-        user, password = credentials.split(":", 1)
-        
-        user = unquote(user)
-        password = unquote(password)
-        
-        host_port, dbname = host_port_db.split("/")
-        dbname = dbname.split("?")[0]
-        dbname = unquote(dbname)
-        
-        if ":" in host_port:
-            host, port = host_port.split(":")
-        else:
-            host = host_port
-            port = "5432"
-            
-        conn = psycopg2.connect(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database="postgres"
-        )
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        cur = conn.cursor()
-        
-        # Probing pg_catalog
-        cur.execute(f"SELECT 1 FROM pg_catalog.pg_database WHERE datname = '{dbname}'")
-        exists = cur.fetchone()
-        
-        if not exists:
-            print(f"Database '{dbname}' does not exist on PostgreSQL host. Creating it automatically...")
-            cur.execute(f"CREATE DATABASE {dbname}")
-            print(f"Database '{dbname}' successfully created.")
-        else:
-            print(f"Database '{dbname}' already exists.")
-            
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Database creation check bypassed: {e}")
+# Root endpoint for Render deployment health check
+@app.get("/")
+def root():
+    return {"status": "ok"}
 
-# Asynchronous table creation on startup with automatic local SQLite fallback
+# Asynchronous table creation and PostgreSQL connectivity check on startup
 @app.on_event("startup")
 async def startup():
-    global engine, AsyncSessionLocal
-    
-    # Try to ensure target postgres db is created first
-    ensure_postgres_db_exists(DATABASE_URL)
-    
+    print("LOG: Attempting to connect to PostgreSQL database...")
     try:
-        # Attempt to establish connection and run tables creation with default PostgreSQL engine
+        # Establish connection and run tables creation
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        print("Connected to PostgreSQL successfully.")
+        print("LOG: Connected to PostgreSQL successfully. Database schema initialized.")
     except Exception as e:
-        print(f"PostgreSQL connection failed: {e}. Falling back to dynamic SQLite local ledger...")
-        sqlite_url = "sqlite+aiosqlite:///./inventory.db"
-        engine = create_async_engine(sqlite_url, echo=True)
-        AsyncSessionLocal = async_sessionmaker(
-            bind=engine, 
-            class_=AsyncSession, 
-            expire_on_commit=False
-        )
-        # Initialize SQLite database schema
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        print("Initialized fallback SQLite database successfully.")
+        print(f"CRITICAL ERROR: Failed to connect to PostgreSQL on startup: {e}")
+        import traceback
+        traceback.print_exc()
+        # Raise exception to fail the startup and halt the deployment on Render
+        raise e
 
 # Dependency to get Async Database Session
 async def get_db():
