@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from .models import Base, Product, Customer, Order, OrderItem
 
 # Database Configuration (Reads from Environment Variables)
+load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("CRITICAL: DATABASE_URL environment variable is not set!")
@@ -23,7 +24,12 @@ if "sslmode=" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("sslmode=", "ssl=")
 
 # Set up the Async Engine and Async Session Maker
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+    pool_pre_ping=True,
+    pool_recycle=300
+)
 AsyncSessionLocal = async_sessionmaker(
     bind=engine, 
     class_=AsyncSession, 
@@ -41,10 +47,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Root endpoint for Render deployment health check
 @app.get("/")
-def root():
+async def root():
     return {"status": "ok"}
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
 
 # Asynchronous table creation and PostgreSQL connectivity check on startup
 @app.on_event("startup")
@@ -56,19 +65,13 @@ async def startup():
             await conn.run_sync(Base.metadata.create_all)
         print("LOG: Connected to PostgreSQL successfully. Database schema initialized.")
     except Exception as e:
-        print(f"CRITICAL ERROR: Failed to connect to PostgreSQL on startup: {e}")
-        import traceback
-        traceback.print_exc()
-        # Raise exception to fail the startup and halt the deployment on Render
-        raise e
+        print(f"CRITICAL ERROR: Failed to connect to PostgreSQL: {e}")
+        raise
 
 # Dependency to get Async Database Session
 async def get_db():
     async with AsyncSessionLocal() as db:
-        try:
-            yield db
-        finally:
-            await db.close()
+        yield db
 
 # --- PYDANTIC SCHEMAS (Request/Response Validation) ---
 

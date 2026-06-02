@@ -15,8 +15,8 @@ FROM nginx:1.25-alpine
 # Copy custom built assets from build stage
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Copy standard routing configuration to prevent 404s on SPA page refreshes
-RUN echo 'server { listen 80; location / { root /usr/share/nginx/html; index index.html index.htm; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
+# Copy standard routing configuration to prevent 404s on SPA page refreshes and proxy API calls to the backend
+RUN echo 'server { listen 80; location /api/ { rewrite ^/api/(.*)$ /$1 break; proxy_pass http://backend:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; proxy_redirect off; } location / { root /usr/share/nginx/html; index index.html index.htm; try_files $uri $uri/ /index.html; } }' > /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
