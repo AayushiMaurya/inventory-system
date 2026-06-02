@@ -23,4 +23,4 @@ jobs:
         context: ./backend
         file: ./backend/Dockerfile
         push: true
-        tags: ${{ secrets.DOCKER_USERNAME }}/stockstream-backend:latest
+        tags: aayushimaurya/stockstream-backend:latest
